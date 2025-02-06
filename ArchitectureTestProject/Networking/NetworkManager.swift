@@ -1,5 +1,6 @@
 
 import Foundation
+import Combine
 
 enum HttpMethods: String {
     case GET, POST, PUT, PATCH, DELETE
@@ -45,15 +46,14 @@ class NetworkManager {
         self.baseUrl = baseUrl
     }
     
-    func request<T: Decodable>(
+    private func getUrlRequest<T: Decodable>(
         pathUrl: ApiPaths,
         httpMethod: HttpMethods,
-        resultType: T.Type,
         additionalHeaders: [String: String]? = nil,
         queryParameters: [String: String]? = nil,
         bodyParams: [String: Any]? = nil,
         completion: @escaping (Result<T, NetworkError>) -> Void
-    ) {
+    ) -> URLRequest? {
         
         var urlComponents = URLComponents()
         urlComponents.scheme = "https"
@@ -66,7 +66,7 @@ class NetworkManager {
         
         guard let requestUrl = urlComponents.url else {
             completion(.failure(.invalidUrl))
-            return
+            return nil
         }
         
         var urlRequest = URLRequest(url: requestUrl)
@@ -75,6 +75,10 @@ class NetworkManager {
         var headers = commonHeaders
         if let additionalHeaders {
             headers.merge(additionalHeaders) { (_, new) in new }
+        }
+        
+        for (key, value) in headers {
+            urlRequest.addValue(value, forHTTPHeaderField: key)
         }
         
         if let bodyParams {
@@ -86,8 +90,21 @@ class NetworkManager {
             }
         }
         
-        for (key, value) in headers {
-            urlRequest.addValue(value, forHTTPHeaderField: key)
+        return urlRequest
+    }
+    
+    func request<T: Decodable>(
+        pathUrl: ApiPaths,
+        httpMethod: HttpMethods,
+        resultType: T.Type,
+        additionalHeaders: [String: String]? = nil,
+        queryParameters: [String: String]? = nil,
+        bodyParams: [String: Any]? = nil,
+        completion: @escaping (Result<T, NetworkError>) -> Void
+    ) {
+        
+        guard let urlRequest = getUrlRequest(pathUrl: pathUrl, httpMethod: httpMethod, completion: completion) else {
+            return
         }
         
         let task = URLSession.shared.dataTask(with: urlRequest) { data, response, error in
@@ -119,6 +136,65 @@ class NetworkManager {
             }
         }
         task.resume()
+    }
+    
+    func combineRequest<T: Decodable>(
+        pathUrl: ApiPaths,
+        httpMethod: HttpMethods,
+        resultType: T.Type,
+        additionalHeaders: [String: String]? = nil,
+        queryParameters: [String: String]? = nil,
+        bodyParams: [String: Any]? = nil
+    ) -> AnyPublisher<T, NetworkError> {
+        
+        var urlComponents = URLComponents()
+        urlComponents.scheme = "https"
+        urlComponents.host = baseUrl
+        urlComponents.path = pathUrl.rawValue
+        
+        if let queryParameters {
+            urlComponents.queryItems = queryParameters.map { URLQueryItem(name: $0.key, value: $0.value) }
+        }
+        
+        guard let requestUrl = urlComponents.url else {
+            return Fail(error: NetworkError.invalidUrl).eraseToAnyPublisher()
+        }
+        
+        var urlRequest = URLRequest(url: requestUrl)
+        urlRequest.httpMethod = httpMethod.rawValue
+        
+        var headers = commonHeaders
+        if let additionalHeaders {
+            headers.merge(additionalHeaders) { _, new in
+                new
+            }
+        }
+        
+        for (key, value) in headers {
+            urlRequest.addValue(value, forHTTPHeaderField: key)
+        }
+        
+        if let bodyParams {
+            do {
+                let bodyData = try JSONSerialization.data(withJSONObject: bodyParams, options: [])
+                urlRequest.httpBody = bodyData
+            } catch {
+                return Fail(error: NetworkError.requestFailed("Failed to encode body parameters.")).eraseToAnyPublisher()
+            }
+        }
+        
+        return URLSession.shared.dataTaskPublisher(for: urlRequest)
+            .tryMap { output -> Data in
+                guard let response = output.response as? HTTPURLResponse, (200...299).contains(response.statusCode) else {
+                    throw NetworkError.invalidResponse
+                }
+                return output.data
+            }
+            .decode(type: T.self, decoder: JSONDecoder())
+            .mapError { error in
+                return NetworkError.requestFailed(error.localizedDescription)
+            }
+            .eraseToAnyPublisher()
     }
 }
 
