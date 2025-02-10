@@ -196,6 +196,85 @@ class NetworkManager {
             }
             .eraseToAnyPublisher()
     }
+    
+    func futureRequest<T: Decodable>(
+        pathUrl: ApiPaths,
+        httpMethod: HttpMethods,
+        resultType: T.Type,
+        additionalHeaders: [String: String]? = nil,
+        queryParameters: [String: String]? = nil,
+        bodyParams: [String: Any]? = nil
+    ) -> Future<T, NetworkError> {
+        
+        return Future { [weak self] promise in
+            
+            guard let self else {
+                promise(.failure(.noData))
+                return
+            }
+            
+            var urlComponents = URLComponents()
+            urlComponents.scheme = "https"
+            urlComponents.host = baseUrl
+            urlComponents.path = pathUrl.rawValue
+            
+            if let queryParameters {
+                urlComponents.queryItems = queryParameters.map { URLQueryItem(name: $0.key, value: $0.value) }
+            }
+            
+            guard let requestUrl = urlComponents.url else {
+                promise(.failure(.invalidUrl))
+                return
+            }
+            
+            var urlRequest = URLRequest(url: requestUrl)
+            urlRequest.httpMethod = httpMethod.rawValue
+            
+            var headers = commonHeaders
+            if let additionalHeaders {
+                headers.merge(additionalHeaders) { _, new in
+                    new
+                }
+            }
+            
+            for (key, value) in headers {
+                urlRequest.addValue(value, forHTTPHeaderField: key)
+            }
+            
+            if let bodyParams {
+                do {
+                    let bodyData = try JSONSerialization.data(withJSONObject: bodyParams, options: [])
+                    urlRequest.httpBody = bodyData
+                } catch {
+                    promise(.failure(.requestFailed("Failed to encode body parameters.")))
+                }
+            }
+            
+            URLSession.shared.dataTask(with: urlRequest) { data, response, error in
+                if let error = error {
+                    promise(.failure(.requestFailed(error.localizedDescription)))
+                    return
+                }
+                
+                guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
+                    promise(.failure(.invalidResponse))
+                    return
+                }
+                
+                guard let data = data else {
+                    promise(.failure(.noData))
+                    return
+                }
+                
+                do {
+                    let decodedResponse = try JSONDecoder().decode(T.self, from: data)
+                    promise(.success(decodedResponse))
+                } catch {
+                    promise(.failure(.decodingFailed(error.localizedDescription)))
+                }
+            }.resume()
+        }
+    }
 }
 
 struct Birds: Codable {
