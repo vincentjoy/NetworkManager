@@ -6,14 +6,14 @@ enum HttpMethods: String {
     case GET, POST, PUT, PATCH, DELETE
 }
 
-enum NetworkError: Error {
+enum NetworkError: Error, LocalizedError {
     case invalidUrl
     case requestFailed(String)
     case invalidResponse
     case decodingFailed(String)
     case noData
     
-    var message: String {
+    var errorDescription: String? {
         switch self {
         case .invalidUrl:
             return "Invalid URL"
